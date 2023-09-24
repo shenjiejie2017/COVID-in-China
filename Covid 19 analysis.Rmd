@@ -1,0 +1,252 @@
+---
+title: "Covid 19 analysis"
+author: "Jie Shen"
+date: "2023-09-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## File and Data
+
+This is a R Markdown document for **COVID 19 project for China**. The data used in this project can be found at "https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series". Please visit the site for detailed data description.
+
+
+## Project goal
+The project is to discover patterns and trends from Covid data in China. I want to explore things like the Covid cases and deaths trends over the years, and what states are best and worst.
+
+## Packages needed
+Be sure the following packages are installed first:
+
+* tidyverse
+* ggplot2
+
+## Load Packages
+```{r load packages, results="hide",message=FALSE}
+
+library(tidyverse)
+library(ggplot2)
+library(forcats)
+library(lubridate)
+```
+
+## Import Data and clean up
+```{r import data}
+#Import data from webnsite
+url_in<-"https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names<-c("time_series_covid19_confirmed_global.csv","time_series_covid19_deaths_global.csv")
+
+urls=str_c(url_in, file_names)
+global_cases<-read_csv(urls[1])
+global_deaths<-read_csv(urls[2])
+```
+Now let's take a look and do some clean up
+```{r global cases and deaths}
+# Take a look
+head(global_cases)
+head(global_deaths)
+
+# Need to pivot dates to rows
+global_cases<-global_cases %>%
+  pivot_longer(cols= -c("Province/State", "Country/Region", Lat, Long),
+                       names_to="date",
+                       values_to="cases")
+head(global_cases)
+
+# Do similar things to global deaths
+global_deaths<-global_deaths %>%
+  pivot_longer(cols= -c("Province/State", "Country/Region", Lat, Long),
+                       names_to="date",
+                       values_to="deaths")
+
+# Combine global cases and deaths
+global<- global_cases %>%
+        full_join(global_deaths) %>%
+        mutate(date=mdy(date)) %>%
+        rename(Country_Region='Country/Region',
+               Province_State ='Province/State')
+
+# Take a look again
+head(global)
+
+# US data has "Combined_Key". Add this to global data too.
+global<-global%>%
+  unite("Combined_Key",
+       c("Province_State", "Country_Region"),
+       sep=", ",
+       na.rm=TRUE,
+       remove=FALSE
+  )
+
+
+# US data has "Combined_Key". Add this to global data too.
+global<-global%>%
+  unite("Combined_Key",
+       c("Province_State", "Country_Region"),
+       sep=", ",
+       na.rm=TRUE,
+       remove=FALSE
+  )
+
+# Take another look
+head(global)
+
+# Summary statistics
+summary(global)
+
+```
+
+We can see the earliest date is 2020-01-22 and the latest is 2023-03-09.
+
+Since tt's unfair to compare the numbers from big population state to a small state, I also want to see cases and deaths per populations. I found the population data set on the same github website.
+
+```{r get population}
+# Import population data
+uid_lookup_url="https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid=read_csv(uid_lookup_url)
+# After looking through the columns, exclude unwanted columns %>%
+uid<-uid%>% select(-c(Lat, Long_, Combined_Key, iso2,  iso3,  code3,Admin2, UID, FIPS) )
+
+# Add population column to global data
+global<-global%>%
+  full_join(uid, by=c("Province_State", "Country_Region"))
+
+# Take another look
+head(global)
+```
+## Analysis
+### Get per state and total Country numbers
+```{r China by state}
+# Get a China data frame
+CN<-global%>%filter(Country_Region=="China")
+
+# China by state total cases, deaths, and death per million population
+CN_by_state<-CN%>%
+  group_by( Country_Region,Province_State, date) %>%
+  summarise(cases=sum(cases), deaths=sum(deaths), Population = sum(Population)) %>%
+  mutate(death_per_mill = deaths/Population*1000000) %>%
+  ungroup()
+
+#Take a look
+tail(CN_by_state)
+
+# China Totals
+CN_totals<- CN%>%
+  group_by( Country_Region, date) %>%
+  summarise(cases=sum(cases), deaths=sum(deaths), Population = sum(Population)) %>%
+  mutate(death_per_mill = deaths/Population*1000000) %>%
+  arrange(death_per_mill) %>%
+ ungroup()
+
+#Take a look
+tail(CN_totals)
+```
+
+### Visualization CN totals
+
+```{r CN Totals Viz}
+# Visualize CN totals
+options(repr.plot.width=30, repr.plot.height=10)
+CN_totals %>%
+  filter(cases>0) %>%
+  ggplot(aes(x=date, y=cases))  +
+  geom_line(aes(color="cases")) +
+  geom_point(aes(color="cases")) +
+  geom_line(aes(y=deaths, color="deaths")) +
+  geom_point(aes(y=deaths, color="deaths")) +
+  scale_y_log10() +
+   scale_x_date(date_labels = "%y-%b", date_breaks = "4 month") +
+  theme(legend.position='bottom', axis.text=element_text(angle=90, size=10)) +
+  labs(title="COVID 19 in China - total cases and deaths", y=NULL)
+```
+
+## How about new cases and new deaths?
+When looking at trends, it's good to see how many new cases and new deaths. Let's add those columns
+```{r new cases and deaths}
+# Add new cases columns to China data
+CN_by_state<- CN_by_state%>% arrange(Country_Region, Province_State, date) %>%
+      mutate(new_cases=cases-lag(cases), new_deaths=deaths-lag(deaths))
+    
+CN_totals<- CN_totals%>% arrange(Country_Region, date) %>%
+      mutate(new_cases=cases-lag(cases), new_deaths=deaths-lag(deaths))
+    
+# Take a look
+tail(CN_by_state)
+tail(CN_totals)
+```
+## Visualize new cases and deaths in China
+```{r vis new cases and deaths}
+# Visualize China totals
+options(repr.plot.width=30, repr.plot.height=10)
+CN_totals %>%
+  filter(cases>0) %>%
+  ggplot(aes(x=date, y=new_cases))  +
+  geom_line(aes(color="new_cases")) +
+  geom_point(aes(color="new_cases")) +
+  geom_line(aes(y=deaths, color="new_deaths")) +
+  geom_point(aes(y=deaths, color="new_deaths")) +
+  scale_y_log10() +
+  scale_x_date(date_labels = "%y-%b", date_breaks = "4 month") +
+  theme(legend.position='bottom', axis.text=element_text(angle=90, size=10)) +
+  labs(title="COVID 19 in China - new cases and deaths", y=NULL)
+```
+## What are the worst and best states in China?
+
+### CN by states
+Let's see which states are best/worst (in term of death/population)
+```{r worst best states}
+CN_state_totals <- CN_by_state %>%
+   group_by(Province_State) %>%
+   summarize(cases=max(cases),
+       deaths= max(deaths),
+       Population=max(Population),
+       cases_per_thou=1000*cases/Population,
+       deaths_per_thou=1000*deaths/Population)
+CN_state_totals %>% slice_min(deaths_per_thou,n=10)
+CN_state_totals %>% slice_max(deaths_per_thou,n=10)
+```
+
+## visualize state of interest
+I want to visualize the top 3 worst states
+```{r top 3 viz}
+state<- "Hong Kong"
+CN_by_state %>%
+  filter(Province_State==state) %>%
+  ggplot(aes(x=date, y=cases))  +
+  geom_line(aes(color="cases")) +
+  geom_point(aes(color="cases")) +
+  geom_line(aes(y=deaths, color="deaths")) +
+  geom_point(aes(y=deaths, color="deaths")) +
+  scale_y_log10() +
+  scale_x_date(date_labels = "%y-%b", date_breaks = "4 month") +
+  theme(legend.position='bottom', axis.text=element_text(angle=90, size=10)) +
+  labs(title=str_c("COVID 19 in ", state," - total cases and deaths"), y=NULL)
+
+state<- "Macau"
+CN_by_state %>%
+  filter(Province_State==state) %>%
+  ggplot(aes(x=date, y=cases))  +
+  geom_line(aes(color="cases")) +
+  geom_point(aes(color="cases")) +
+  geom_line(aes(y=deaths, color="deaths")) +
+  geom_point(aes(y=deaths, color="deaths")) +
+  scale_y_log10() +
+  scale_x_date(date_labels = "%y-%b", date_breaks = "4 month") +
+  theme(legend.position='bottom', axis.text=element_text(angle=90, size=10)) +
+  labs(title=str_c("COVID 19 in ", state," - total cases and deaths"), y=NULL)
+
+state<- "Hubei"
+CN_by_state %>%
+  filter(Province_State==state) %>%
+  ggplot(aes(x=date, y=cases))  +
+  geom_line(aes(color="cases")) +
+  geom_point(aes(color="cases")) +
+  geom_line(aes(y=deaths, color="deaths")) +
+  geom_point(aes(y=deaths, color="deaths")) +
+  scale_y_log10() +
+  scale_x_date(date_labels = "%y-%b", date_breaks = "4 month") +
+  theme(legend.position='bottom', axis.text=element_text(angle=90, size=10)) +
+  labs(title=str_c("COVID 19 in ", state," - total cases and deaths"), y=NULL)
+
