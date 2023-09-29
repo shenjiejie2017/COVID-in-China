@@ -2,7 +2,9 @@
 title: "Covid 19 analysis"
 author: "Jie Shen"
 date: "2023-09-24"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -13,15 +15,18 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This is a R Markdown document for **COVID 19 project for China**. The data used in this project can be found at "https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series". Please visit the site for detailed data description.
 
+The data I used are global cases and deaths. From the website "https://github.com/CSSEGISandData/COVID-19", Johns Hopkins Corona virus Resource Center ceased its collecting and reporting of global COVID-19 data on March 10, 2023. The global data is from World Health Organization (WHO) "https://www.who.int/".
 
 ## Project goal
-The project is to discover patterns and trends from Covid data in China. I want to explore things like the Covid cases and deaths trends over the years, and what states are best and worst.
+The project is to discover patterns and trends from COVID data in China. I want to explore things like the COVID cases and deaths trends over the years, and what states are best and worst.
 
 ## Packages needed
 Be sure the following packages are installed first:
 
 * tidyverse
 * ggplot2
+* caret
+* lubridate
 
 ## Load Packages
 ```{r load packages, results="hide",message=FALSE}
@@ -30,6 +35,8 @@ library(tidyverse)
 library(ggplot2)
 library(forcats)
 library(lubridate)
+library(dplyr)
+library(caret)
 ```
 
 ## Import Data and clean up
@@ -68,31 +75,6 @@ global<- global_cases %>%
         rename(Country_Region='Country/Region',
                Province_State ='Province/State')
 
-# Take a look again
-head(global)
-
-# US data has "Combined_Key". Add this to global data too.
-global<-global%>%
-  unite("Combined_Key",
-       c("Province_State", "Country_Region"),
-       sep=", ",
-       na.rm=TRUE,
-       remove=FALSE
-  )
-
-
-# US data has "Combined_Key". Add this to global data too.
-global<-global%>%
-  unite("Combined_Key",
-       c("Province_State", "Country_Region"),
-       sep=", ",
-       na.rm=TRUE,
-       remove=FALSE
-  )
-
-# Take another look
-head(global)
-
 # Summary statistics
 summary(global)
 
@@ -100,28 +82,52 @@ summary(global)
 
 We can see the earliest date is 2020-01-22 and the latest is 2023-03-09.
 
-Since tt's unfair to compare the numbers from big population state to a small state, I also want to see cases and deaths per populations. I found the population data set on the same github website.
+Since it's unfair to compare the numbers from big population state to a small state, I also want to see cases and deaths per populations. I found the population data set on the same github website.
 
 ```{r get population}
 # Import population data
 uid_lookup_url="https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
 uid=read_csv(uid_lookup_url)
-# After looking through the columns, exclude unwanted columns %>%
+# After looking through the columns, exclude unwanted columns 
 uid<-uid%>% select(-c(Lat, Long_, Combined_Key, iso2,  iso3,  code3,Admin2, UID, FIPS) )
 
 # Add population column to global data
 global<-global%>%
   full_join(uid, by=c("Province_State", "Country_Region"))
 
-# Take another look
-head(global)
+# Get China data
+CN<-global%>%filter(Country_Region=="China")
+head(CN)
+
+```
+
+## Missing Values
+
+Check missing value
+```{r check missing value}
+as.data.frame(colSums(CN%>%(is.na)))
+```
+clean up missing values
+```{r clean up}
+# I think we don't need Lat and Long columns, exclude them
+CN<-CN%>%select(-c(Lat,Long))
+
+# Since I will aggregate data by dates, I will just exclude rows with missing date. My guess is those are rows wihth missing cases and deaths too.
+CN <- CN %>% filter(!is.na(date))
+
+# Check what Province_State those rows with missing Pupulation comes from
+unique(CN %>% filter(is.na(Population)) %>% filter(!is.na(Province_State))) %>% distinct(Province_State)
+
+# It seems those are all "unknow" states. I want to exclude them as well as cases 0 rows
+CN <- CN %>% filter(cases>0 & Population >0)
+
+# Take a look at missing values again
+as.data.frame(colSums(CN%>%(is.na)))
+
 ```
 ## Analysis
 ### Get per state and total Country numbers
 ```{r China by state}
-# Get a China data frame
-CN<-global%>%filter(Country_Region=="China")
-
 # China by state total cases, deaths, and death per million population
 CN_by_state<-CN%>%
   group_by( Country_Region,Province_State, date) %>%
@@ -192,6 +198,7 @@ CN_totals %>%
   theme(legend.position='bottom', axis.text=element_text(angle=90, size=10)) +
   labs(title="COVID 19 in China - new cases and deaths", y=NULL)
 ```
+
 ## What are the worst and best states in China?
 
 ### CN by states
@@ -249,4 +256,60 @@ CN_by_state %>%
   scale_x_date(date_labels = "%y-%b", date_breaks = "4 month") +
   theme(legend.position='bottom', axis.text=element_text(angle=90, size=10)) +
   labs(title=str_c("COVID 19 in ", state," - total cases and deaths"), y=NULL)
+```
+
+## Modeling
+
+Modeling isn't the focus of this project. But I just want to do a couple of quick ones.
+
+### Linear Regression
+
+```{r model linear regression}
+# fit model
+mod<-lm(deaths_per_thou ~ cases_per_thou, data = CN_state_totals)
+summary(mod)
+
+# add predicted results column
+CN_tot_w_pred <- CN_state_totals %>% mutate(pred = predict(mod))
+head(CN_tot_w_pred)
+
+# visualize results
+CN_tot_w_pred %>% ggplot() +
+  geom_point(aes(x = cases_per_thou, y = cases_per_thou), color = "blue") +
+  geom_point(aes(x = cases_per_thou, y = pred), color = "red") +
+  xlim(0,1)+
+  ylim(0,0.1) +
+  labs(x = "Cases per Thousand", y = "Deaths per Thousand")  # Customize axis labels
+
+```
+
+
+### KNN
+```{r model knn}
+### fit model
+mod <- train(deaths_per_thou ~ cases_per_thou, data = CN_state_totals, method = "knn")
+print(mod)
+
+# add predicted results column
+CN_tot_w_pred <- CN_state_totals %>% mutate(pred = predict(mod))
+head(CN_tot_w_pred)
+
+# visuailze results
+CN_tot_w_pred %>% ggplot() +
+  geom_point(aes(x = cases_per_thou, y = cases_per_thou), color = "blue") +
+  geom_point(aes(x = cases_per_thou, y = pred), color = "red") +
+  xlim(0,1)+
+  ylim(0,0.1) +
+  labs(x = "Cases per Thousand", y = "Deaths per Thousand")  # Customize axis labels)
+```
+
+## Bias
+
+Bias can come from different sources.
+
+First, I want to consider the quality of data. How is data collected? Are all cases and deaths captured? Why are there some unknown states with unknown populations? Since I excluded those rows with missing population and states, the total population of China won't be accurate. 
+
+Second, for modeling, it seems my predictions are far away from the actual. It seems the bias are large there. What causes this? I think maybe over the years the deaths per thousand and cases per thousand changes so much. It won't be good to just use deaths per thousand to predict cases per thousand. Maybe my modeling methods are wrong and my data doesn't fit well with the model assumptions.
+
+Third, when I draw the modeling graphs, I eliminated some outliers. This may give the wrong impression of the range of deaths per thousand and cases per thousand.
 
